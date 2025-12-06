@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>Nakano Lab Reservation System</title>
+
+  <!-- FullCalendar -->
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/index.global.min.js"></script>
+
+  <style>
+    body { font-family: sans-serif; margin: 20px; max-width: 1400px; }
+    h1 { text-align: center; margin-bottom: 10px; }
+    #deviceTabs button { margin: 5px; padding: 8px 12px; cursor: pointer; }
+    #deviceTabs button.active { background-color: #007bff; color: white; border-radius: 8px; }
+    #calendar { height: 650px; margin-top: 20px; }
+    .form-container { margin-top: 15px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    input, select { padding: 4px; }
+    label { font-weight: bold; }
+
+    /* ✅ 土日カラー設定 */
+    .fc-day-sat { background-color: #e0f0ff !important; }
+    .fc-day-sun { background-color: #ffe0e0 !important; }
+  </style>
+</head>
+
+<body>
+  <h1>Nakano Lab Reservation System</h1>
+
+  <div id="deviceTabs"></div>
+
+  <div class="form-container">
+    <label>名前:</label><input type="text" id="userName" placeholder="予約者名">
+    <label>日付:</label><input type="date" id="reserveDate">
+    <label>開始:</label>
+    <select id="startHour"></select>:<select id="startMin"></select>
+    <label>終了:</label>
+    <select id="endHour"></select>:<select id="endMin"></select>
+    <button id="reserveBtn">予約する</button>
+  </div>
+
+  <div id="calendar"></div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
+    import {
+      getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, updateDoc, query, where
+    } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+
+    // Firebase設定
+    const firebaseConfig = {
+      apiKey: "AIzaSyDbD4t0zOgUcSKRxS_Z6aD0x2imTbr76eo",
+      authDomain: "lab-reservation-56db5.firebaseapp.com",
+      projectId: "lab-reservation-56db5",
+      storageBucket: "lab-reservation-56db5.firebasestorage.app",
+      messagingSenderId: "612523208123",
+      appId: "1:612523208123:web:4de8000d5203eb7995e89e"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // 装置リスト
+    const devices = ["MOCVD", "アニール", "スパッタ", "蒸着", "PL", "放射線測定", "高温チャンバー", "電気炉"];
+    let currentDevice = devices[0];
+    let calendar;
+
+    // タブ生成
+    const tabContainer = document.getElementById("deviceTabs");
+    devices.forEach(device => {
+      const btn = document.createElement("button");
+      btn.textContent = device;
+      if (device === currentDevice) btn.classList.add("active");
+      btn.onclick = () => {
+        currentDevice = device;
+        document.querySelectorAll("#deviceTabs button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        loadReservations(); // デバイス切替時のみ更新
+      };
+      tabContainer.appendChild(btn);
+    });
+
+    // 時間プルダウン
+    const startHour = document.getElementById("startHour");
+    const endHour = document.getElementById("endHour");
+    for (let i = 0; i < 24; i++) {
+      startHour.innerHTML += `<option value="${i}">${String(i).padStart(2, "0")}</option>`;
+      endHour.innerHTML += `<option value="${i}">${String(i).padStart(2, "0")}</option>`;
+    }
+    const startMin = document.getElementById("startMin");
+    const endMin = document.getElementById("endMin");
+    [startMin, endMin].forEach(sel => {
+      for (let m = 0; m < 60; m += 10) {
+        sel.innerHTML += `<option value="${m}">${String(m).padStart(2, "0")}</option>`;
+      }
+    });
+
+    // カレンダー初期化（1回のみ）
+    function initCalendar() {
+      const calendarEl = document.getElementById("calendar");
+      calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: "timeGridWeek",
+        locale: "ja",
+        slotMinTime: "00:00:00",
+        slotMaxTime: "24:00:00",
+        slotDuration: "01:00:00",
+        height: 650,
+        expandRows: true,
+        allDaySlot: false,
+        dayMaxEvents: true,
+        eventClick: async function(info) {
+          const docId = info.event.extendedProps.docId;
+          const action = prompt("編集(e) または 削除(d) を入力してください", "e");
+          if (action === "d") {
+            if (confirm("本当に削除しますか？")) {
+              await deleteDoc(doc(db, "reservations", docId));
+              alert("削除しました");
+            }
+          } else if (action === "e") {
+            const newName = prompt("予約者名を変更:", info.event.title);
+            if (!newName) return;
+            const newStart = prompt("開始(例 2025-11-09T10:00):", info.event.startStr);
+            const newEnd = prompt("終了(例 2025-11-09T12:00):", info.event.endStr);
+            if (!newStart || !newEnd) return;
+            await updateDoc(doc(db, "reservations", docId), {
+              title: newName,
+              start: newStart,
+              end: newEnd
+            });
+          }
+        }
+      });
+      calendar.render();
+    }
+    initCalendar();
+
+    // イベントをFirestoreからロードして更新
+    async function loadReservations() {
+      const q = query(collection(db, "reservations"), where("device", "==", currentDevice));
+      onSnapshot(q, (snapshot) => {
+        const events = snapshot.docs.map(docSnap => ({
+          title: docSnap.data().title,
+          start: docSnap.data().start,
+          end: docSnap.data().end,
+          docId: docSnap.id
+        }));
+
+        // ✅ 表示週を維持したままイベントを更新
+        const currentStart = calendar.view.activeStart;
+        calendar.removeAllEvents();
+        calendar.addEventSource(events);
+        calendar.gotoDate(currentStart);
+      });
+    }
+    loadReservations();
+
+    // 予約追加
+    document.getElementById("reserveBtn").onclick = async () => {
+      const name = document.getElementById("userName").value.trim();
+      const date = document.getElementById("reserveDate").value;
+      if (!name || !date) return alert("名前と日付を入力してください");
+      const start = `${date}T${startHour.value.padStart(2, "0")}:${startMin.value.padStart(2, "0")}:00`;
+      const end = `${date}T${endHour.value.padStart(2, "0")}:${endMin.value.padStart(2, "0")}:00`;
+      await addDoc(collection(db, "reservations"), {
+        title: name,
+        start,
+        end,
+        device: currentDevice
+      });
+    };
+  </script>
+</body>
+</html>
